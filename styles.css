@@ -1192,8 +1192,10 @@ input[data-time-picker].open { border-color: var(--accent); outline: none; box-s
 .place-head[data-action="focus-place"] { padding-left: 8px; }
 
 /* ---------- 選單：專案與遠端 ---------- */
-.menu-card { max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - 76px); overflow-y: auto; }
-.menu-section { display: grid; gap: 8px; }
+/* 欄寬固定為卡片寬度：內容過寬時換行，不撐開卡片 */
+.menu-card { max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - 76px); overflow-y: auto; grid-template-columns: minmax(0, 1fr); }
+.remote-panel .menu-actions { flex-wrap: wrap; }
+.menu-section { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
 .menu-section-title { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 600; color: var(--text-muted); }
 .project-row { display: flex; gap: 6px; align-items: center; }
 .project-select, .remote-message {
@@ -1241,3 +1243,10 @@ input[data-time-picker].open { border-color: var(--accent); outline: none; box-s
 .rc-text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-current { font-size: 0.75rem; font-weight: 600; color: var(--accent); }
 .btn:disabled, .project-select:disabled { opacity: 0.5; pointer-events: none; }
+.merge-list { margin: 0; padding: 0; list-style: none; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.merge-item { display: grid; gap: 4px; padding: 8px 10px; font-size: 0.82rem; }
+.merge-item + .merge-item { border-top: 1px solid var(--border); }
+.merge-where { color: var(--text-muted); overflow-wrap: anywhere; }
+.merge-where b { color: var(--text); font-weight: 600; }
+.merge-item .check { align-items: flex-start; font-size: 0.82rem; }
+.merge-item .check span { overflow-wrap: anywhere; }

@@ -2,16 +2,23 @@
 
 // ===========================================================================
 // 選單中的遠端介面：設定 GitHub repo、推送更新、拉取最新版本、切換到某一個 commit。
-// 請求與資料轉換在 github.js；目前所在的 commit 記錄在 state.local。
+// 請求與資料轉換在 github.js、三方合併在 merge.js；目前所在的 commit 記錄在 state.local。
+//
+// 協作時的處理：
+//   - 推送被拒（遠端在上次同步後有新版本）→ 和遠端三方合併，沒有衝突就自動合併後推送，有衝突時讓使用者逐項選擇
+//   - 拉取時本機有未推送的修改 → 一樣三方合併，保留本機修改
+//   - 任何會丟掉本機修改的動作（使用遠端版本、切換版本、衝突選遠端）之前，先把本機內容另存成備份專案
 // ===========================================================================
 
-// 'status'：目前狀態與操作；'settings'：設定遠端；'history'：版本紀錄；'share'：分享連結與 QR code
+// 'status'：目前狀態與操作；'settings'：設定遠端；'history'：版本紀錄；'share'：分享連結與 QR code；'merge'：合併衝突
 let remoteView = 'status';
 let remoteBusy = false;
 // 版本紀錄：{ commits, page, more }；null 表示還沒載入
 let remoteHistory = null;
 // 尚未送出的提交訊息（重繪時保留）
 let remoteMessage = '';
+// 等待使用者處理的合併：{ kind: 'push' | 'pull', head, base, remote, choices }（base 為 null 表示無法合併）
+let remoteMerge = null;
 // 上面的介面狀態屬於哪個專案；切換專案時重設
 let remoteProjectId = projects.activeId;
 
@@ -39,7 +46,9 @@ function renderRemotePanel() {
     remoteView = 'status';
     remoteHistory = null;
     remoteMessage = '';
+    remoteMerge = null;
   }
+  if (remoteView === 'merge' && !remoteMerge) remoteView = 'status';
   const remote = state.local.remote;
   if (!remote && remoteView === 'history') remoteView = 'status';
   const status = remote ? remoteStatus() : null;
@@ -70,6 +79,11 @@ function renderRemotePanel() {
 
   if (remoteView === 'share') {
     renderSharePanel(head);
+    return;
+  }
+
+  if (remoteView === 'merge') {
+    renderMergePanel(head, disabled);
     return;
   }
 
@@ -299,62 +313,229 @@ function unlinkRemote() {
   renderRemotePanel();
 }
 
-function pushRemote() {
-  if (!ensureToken()) return;
-  remoteTask(async () => {
-    let commit;
-    try {
-      commit = await pushRemoteState(state, { message: remoteMessage });
-    } catch (err) {
-      if (!err.conflict) throw err;
-      const h = err.head;
-      const here = state.local.commit ? `目前所在版本是 ${shortSha(state.local.commit)}。` : '這個專案還沒有和遠端同步過。';
-      const ok = confirm(`遠端最新版本是 ${shortSha(h.sha)}「${firstLine(h.message)}」，${here}\n`
-        + '確定要用目前的內容推送成新的最新版本？（舊版本仍保留在版本紀錄中）');
-      if (!ok) return;
-      commit = await pushRemoteState(state, { message: remoteMessage, force: true });
-    }
-    markSynced(state, commit);
-    save();
-    remoteMessage = '';
-    remoteHistory = null;
-    toast(`已推送 ${shortSha(commit.sha)}`);
-  });
+// ---------------------------------------------------------------------------
+// 本機備份：本機內容要被取代前另存成一個專案
+// ---------------------------------------------------------------------------
+
+function hasNoContent(s) {
+  return s.days.length === 1 && !s.days[0].sections.length && !s.library.collections.length;
 }
 
-// 切換到指定的 commit：用遠端內容取代目前專案的行程
+// 有尚未推送的修改，或從沒同步過且有內容
+function needsBackup(s) {
+  return hasLocalChanges(s) || (!s.local.commit && !hasNoContent(s));
+}
+
+// 回傳備份專案的名稱；不需要備份時回傳 ''
+function backupLocal() {
+  if (!needsBackup(state)) return '';
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const title = `${state.title || '未命名旅程'}（本機備份 ${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}）`;
+  try {
+    saveProjectCopy(state, title);
+  } catch {
+    throw new Error('無法儲存本機備份（儲存空間不足），已取消');
+  }
+  return title;
+}
+
+const backupNote = (title) => (title ? `，本機修改已另存為「${title}」` : '');
+
+// ---------------------------------------------------------------------------
+// 推送、拉取與合併
+// ---------------------------------------------------------------------------
+
+// 推送目前內容，取代 base 這個 commit 上的版本；遠端在 base 之後有新版本時拋出 err.conflict
+async function pushOnto(base) {
+  const commit = await pushRemoteState(state, { message: remoteMessage, base });
+  markSynced(state, commit);
+  save();
+  remoteMessage = '';
+  remoteHistory = null;
+  return commit;
+}
+
+// 準備和遠端 head 合併：base 是上次同步的版本（從沒同步過或取不到時為 null，無法合併）
+async function prepareMerge(kind, head) {
+  const remote = state.local.remote;
+  const [base, remoteState] = await Promise.all([
+    state.local.commit ? fetchRemoteState(remote, state.local.commit).catch(() => null) : null,
+    fetchRemoteState(remote, head.sha),
+  ]);
+  return { kind, head, base, remote: remoteState, choices: {} };
+}
+
+// 以目前的本機內容計算合併結果（使用者在處理衝突期間可能又改了內容）
+const computeMerge = (m) => (m.base ? mergeProject(m.base, state, m.remote, m.choices) : null);
+
+// 套用合併結果：目前所在版本變成遠端 head，合併進來的本機修改算尚未推送
+function applyMerge(m, { menu = true } = {}) {
+  const result = computeMerge(m);
+  // 有衝突選了遠端：本機的部分修改會被取代，先備份
+  const backup = result.conflicts.some((c) => c.choice === 'remote') ? backupLocal() : '';
+  state = result.state;
+  markSynced(state, { ...m.head, hash: contentHash(m.remote) });
+  save();
+  if (menu) afterProjectChanged();
+  else afterStateReplaced();
+  return backup;
+}
+
+// 切換到指定的 commit：用遠端內容取代目前專案的行程（有本機修改時先備份）；回傳備份名稱
 async function checkoutCommit(commit, { menu = true } = {}) {
   const remote = state.local.remote;
   const next = await fetchRemoteState(remote, commit.sha);
+  const backup = backupLocal();
   next.local = state.local;
   state = next;
   markSynced(state, commit);
   // 重繪地圖與選單內容（旅程名稱、出發日等）
   if (menu) afterProjectChanged();
   else afterStateReplaced();
+  return backup;
 }
 
 function confirmDiscard() {
-  if (hasLocalChanges(state)) return confirm('目前有尚未推送的變更，切換版本後這些變更會遺失，確定嗎？');
-  if (!state.local.commit) return confirm('目前專案的內容還沒有推送過，切換版本後會被遠端內容取代，確定嗎？');
+  if (hasLocalChanges(state)) return confirm('目前有尚未推送的變更，切換版本後會先把目前內容另存成一個備份專案，確定嗎？');
+  if (!state.local.commit && !hasNoContent(state)) return confirm('目前專案的內容還沒有和遠端同步過，切換後會先把目前內容另存成一個備份專案，確定嗎？');
   return true;
+}
+
+function showMerge(m, { menu = true } = {}) {
+  remoteMerge = m;
+  remoteView = 'merge';
+  if (menu) renderRemotePanel();
+  else openMenu();
+}
+
+function pushRemote() {
+  if (!ensureToken()) return;
+  remoteTask(async () => {
+    try {
+      const commit = await pushOnto(state.local.commit);
+      toast(`已推送 ${shortSha(commit.sha)}`);
+      return;
+    } catch (err) {
+      if (!err.conflict) throw err;
+    }
+    // 遠端在上次同步後有新版本：合併
+    const head = await fetchRemoteHead(state.local.remote);
+    if (!head) throw new Error('推送失敗，請再試一次');
+    const m = await prepareMerge('push', head);
+    const result = computeMerge(m);
+    if (result && !result.conflicts.length) {
+      applyMerge(m);
+      const commit = await pushOnto(head.sha);
+      toast(`遠端有新版本，已自動合併後推送 ${shortSha(commit.sha)}`, 3500);
+      return;
+    }
+    showMerge(m);
+    toast(result ? `和遠端有 ${result.conflicts.length} 項衝突，請選擇要保留的版本` : '遠端有新版本，請選擇處理方式', 3500);
+  });
+}
+
+// 拉取遠端最新版本；本機有未推送的修改時合併。回傳要顯示的訊息（顯示了合併畫面時為 ''）
+async function pullLatest({ menu = true } = {}) {
+  const head = await fetchRemoteHead(state.local.remote);
+  if (!head) return `遠端還沒有 ${REMOTE_PATH}，編輯後可從選單推送`;
+  const dirty = hasLocalChanges(state);
+  if (head.sha === state.local.commit) return dirty ? '遠端沒有新版本（本機有尚未推送的變更）' : '已經是最新版本';
+  if (dirty) {
+    const m = await prepareMerge('pull', head);
+    const result = computeMerge(m);
+    if (result && !result.conflicts.length) {
+      applyMerge(m, { menu });
+      return `已合併遠端版本 ${shortSha(head.sha)}，本機的修改仍保留（尚未推送）`;
+    }
+    if (result) {
+      showMerge(m, { menu });
+      return '';
+    }
+  }
+  // 沒有本機修改（或無法合併）：直接換成遠端版本，需要時先備份
+  if (needsBackup(state) && !confirmDiscard()) return '已取消拉取';
+  const backup = await checkoutCommit(head, { menu });
+  return `已更新到最新版本 ${shortSha(head.sha)}${backupNote(backup)}`;
 }
 
 function pullRemote() {
   if (!ensureToken()) return;
   remoteTask(async () => {
-    const head = await fetchRemoteHead(state.local.remote);
-    if (!head) {
-      toast('遠端還沒有這個檔案，請先推送');
-      return;
+    const msg = await pullLatest();
+    if (msg) toast(msg, 3500);
+  });
+}
+
+function renderMergePanel(head, disabled) {
+  const m = remoteMerge;
+  const result = computeMerge(m);
+  const remoteInfo = `遠端最新版本 <code>${shortSha(m.head.sha)}</code> ${esc(firstLine(m.head.message))}`;
+  const pushing = m.kind === 'push';
+  if (!result) {
+    remoteEl.innerHTML = `${head}
+      <p class="remote-note">${remoteInfo}。這個專案還沒有和遠端同步過，無法自動合併。</p>
+      <div class="menu-actions">
+        ${pushing ? `<button class="btn small" data-remote="merge-overwrite" ${disabled}>以本機覆蓋</button>` : ''}
+        <button class="btn small" data-remote="merge-remote" ${disabled}>使用遠端（備份本機）</button>
+        <span class="spacer"></span>
+        <button class="btn small" data-remote="merge-cancel" ${disabled}>取消</button>
+      </div>`;
+    return;
+  }
+  const items = result.conflicts.map((c, i) => `
+    <li class="merge-item">
+      <div class="merge-where">${esc(c.where ? `${c.where} › ` : '')}<b>${esc(c.field)}</b></div>
+      <label class="check"><input type="radio" name="merge-${i}" data-merge-key="${esc(c.key)}" value="local" ${c.choice === 'local' ? 'checked' : ''} ${disabled}>
+        <span>本機：${esc(c.local)}</span></label>
+      <label class="check"><input type="radio" name="merge-${i}" data-merge-key="${esc(c.key)}" value="remote" ${c.choice === 'remote' ? 'checked' : ''} ${disabled}>
+        <span>遠端：${esc(c.remote)}</span></label>
+    </li>`).join('');
+  remoteEl.innerHTML = `${head}
+    <p class="remote-note">${remoteInfo}。不衝突的修改會自動合併；下面 ${result.conflicts.length} 項兩邊都改了，請選擇要保留的版本${pushing ? '' : '（選遠端的項目會先備份本機內容）'}：</p>
+    <ul class="merge-list">${items}</ul>
+    <div class="menu-actions">
+      <button class="btn small primary" data-remote="merge-apply" ${disabled}>${pushing ? '合併後推送' : '合併'}</button>
+      ${pushing
+        ? `<button class="btn small" data-remote="merge-overwrite" ${disabled}>以本機覆蓋</button>`
+        : `<button class="btn small" data-remote="merge-remote" ${disabled}>使用遠端</button>`}
+      <span class="spacer"></span>
+      <button class="btn small" data-remote="merge-cancel" ${disabled}>取消</button>
+    </div>`;
+}
+
+function closeMerge() {
+  remoteMerge = null;
+  remoteView = 'status';
+}
+
+function mergeAction(action) {
+  const m = remoteMerge;
+  if (!m) return;
+  if (action === 'cancel') {
+    closeMerge();
+    renderRemotePanel();
+    return;
+  }
+  if (action === 'remote' && !confirm('使用遠端版本？目前的內容會先另存成一個備份專案。')) return;
+  if (action === 'overwrite' && !confirm('用本機內容覆蓋遠端最新版本？遠端的修改仍保留在版本紀錄中。')) return;
+  remoteTask(async () => {
+    closeMerge();
+    if (action === 'remote') {
+      const backup = await checkoutCommit(m.head);
+      toast(`已使用遠端版本 ${shortSha(m.head.sha)}${backupNote(backup)}`, 4000);
+    } else if (action === 'overwrite') {
+      const commit = await pushOnto(m.head.sha);
+      toast(`已以本機內容推送 ${shortSha(commit.sha)}`);
+    } else {
+      const backup = applyMerge(m);
+      if (m.kind === 'push') {
+        const commit = await pushOnto(m.head.sha);
+        toast(`已合併並推送 ${shortSha(commit.sha)}${backupNote(backup)}`, 4000);
+      } else {
+        toast(`已合併遠端版本（尚未推送）${backupNote(backup)}`, 4000);
+      }
     }
-    if (head.sha === state.local.commit && !hasLocalChanges(state)) {
-      toast('已經是最新版本');
-      return;
-    }
-    if (!confirmDiscard()) return;
-    await checkoutCommit(head);
-    toast(`已更新到最新版本 ${shortSha(head.sha)}`);
   });
 }
 
@@ -377,8 +558,8 @@ function checkoutFromHistory(sha) {
   const commit = remoteHistory?.commits.find((c) => c.sha === sha);
   if (!commit || !confirmDiscard()) return;
   remoteTask(async () => {
-    await checkoutCommit(commit);
-    toast(`已切換到 ${shortSha(commit.sha)}`);
+    const backup = await checkoutCommit(commit);
+    toast(`已切換到 ${shortSha(commit.sha)}${backupNote(backup)}`, backup ? 4000 : 2200);
   });
 }
 
@@ -405,10 +586,18 @@ remoteEl.addEventListener('click', (e) => {
     case 'share': remoteView = 'share'; renderRemotePanel(); break;
     case 'copy-link': copyShareLink(); break;
     case 'download-qr': downloadShareQr(); break;
+    case 'merge-apply': mergeAction('apply'); break;
+    case 'merge-overwrite': mergeAction('overwrite'); break;
+    case 'merge-remote': mergeAction('remote'); break;
+    case 'merge-cancel': mergeAction('cancel'); break;
   }
 });
 
 remoteEl.addEventListener('change', (e) => {
+  if (e.target.dataset.mergeKey && remoteMerge) {
+    remoteMerge.choices[e.target.dataset.mergeKey] = e.target.value;
+    return;
+  }
   const option = e.target.dataset.share;
   if (!option) return;
   shareOptions[option] = e.target.checked;
@@ -451,7 +640,7 @@ function findProjectByRepo(repo) {
 }
 
 function isBlankProject(s) {
-  return !s.local.remote && s.days.length === 1 && !s.days[0].sections.length && !s.library.collections.length;
+  return !s.local.remote && hasNoContent(s);
 }
 
 function openRemoteFromUrl() {
@@ -489,19 +678,10 @@ function openRemoteFromUrl() {
     openMenu();
     return;
   }
-  // 已有的專案內容可能還沒推送：先詢問再用遠端內容取代
-  if (existing && !confirmDiscard()) {
-    toast(`已開啟「${state.title}」（未拉取遠端版本）`, 3000);
-    return;
-  }
+  // 拉取最新版本：本機有未推送的修改時合併，需要時先備份
   remoteTask(async () => {
-    const head = await fetchRemoteHead(state.local.remote);
-    if (!head) {
-      toast(`${name} 還沒有 ${REMOTE_PATH}，編輯後可從選單推送`, 4000);
-      return;
-    }
-    if (head.sha !== state.local.commit || hasLocalChanges(state)) await checkoutCommit(head, { menu: false });
-    toast(`已開啟 ${name}：「${state.title}」（${shortSha(head.sha)}）`, 3000);
+    const msg = await pullLatest({ menu: false });
+    if (msg) toast(`已開啟 ${name}：「${state.title}」。${msg}`, 4000);
   });
 }
 

@@ -106,9 +106,10 @@ function utf8ToBase64(text) {
 // ---------------------------------------------------------------------------
 
 class GithubError extends Error {
-  constructor(message, status) {
+  constructor(message, status, detail = '') {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -140,7 +141,7 @@ async function ghRequest(path, { method = 'GET', body, raw = false } = {}) {
     404: '找不到 repo、分支或檔案（也可能是權杖沒有這個 repo 的權限）',
     409: '遠端已有更新的版本',
   };
-  throw new GithubError(messages[res.status] || `GitHub 錯誤 ${res.status}${detail ? `：${detail}` : ''}`, res.status);
+  throw new GithubError(messages[res.status] || `GitHub 錯誤 ${res.status}${detail ? `：${detail}` : ''}`, res.status, detail);
 }
 
 const repoPath = (remote) => `/repos/${encodeURIComponent(remote.owner)}/${encodeURIComponent(remote.repo)}`;
@@ -181,9 +182,9 @@ async function fetchRemoteState(remote, ref) {
   return s;
 }
 
-// 檔案目前在分支上的 blob sha；不存在時為 null（更新檔案時 GitHub 需要這個值）
-async function fetchFileSha(remote) {
-  const q = new URLSearchParams({ ref: REMOTE_BRANCH });
+// 檔案在某個 commit 上的 blob sha；不存在時為 null
+async function fetchFileSha(remote, ref) {
+  const q = new URLSearchParams({ ref });
   try {
     return (await ghRequest(`${repoPath(remote)}/contents/${filePath()}?${q}`)).sha;
   } catch (err) {
@@ -192,28 +193,33 @@ async function fetchFileSha(remote) {
   }
 }
 
-// 推送專案。遠端最新版本不是目前所在的 commit 時拋出 { status: 'conflict', head }，
-// 呼叫端確認後用 force 覆蓋（例如切換到舊版本後，把舊版本推送成最新版本）
-async function pushRemoteState(s, { message = '', force = false } = {}) {
+// 推送專案，取代 base 這個 commit 上的檔案版本（null 表示建立新檔案）。
+// 送出的是 base 版本的 blob sha，由 GitHub 檢查：檔案在 base 之後被別人改過時拒絕（409），
+// 檔案已存在卻沒有 base 時也拒絕（422），兩種都拋出 err.conflict，不會在檢查與上傳之間被別人插隊而默默覆蓋。
+// 要覆蓋別人的版本時，以遠端最新的 commit 作為 base。
+async function pushRemoteState(s, { message = '', base = s.local.commit } = {}) {
   const remote = s.local.remote;
-  const head = await fetchRemoteHead(remote);
-  if (head && head.sha !== s.local.commit && !force) {
-    const err = new GithubError('遠端的最新版本不是目前所在的版本', 409);
-    err.conflict = true;
-    err.head = head;
+  const sha = base ? await fetchFileSha(remote, base) : null;
+  const hash = contentHash(s);
+  let res;
+  try {
+    res = await ghRequest(`${repoPath(remote)}/contents/${filePath()}`, {
+      method: 'PUT',
+      body: {
+        message: message.trim() || defaultCommitMessage(s),
+        content: utf8ToBase64(remoteContent(s)),
+        branch: REMOTE_BRANCH,
+        ...(sha ? { sha } : {}),
+      },
+    });
+  } catch (err) {
+    if (err.status === 409 || (err.status === 422 && /sha/i.test(err.detail))) {
+      const conflict = new GithubError('遠端已有更新的版本', 409);
+      conflict.conflict = true;
+      throw conflict;
+    }
     throw err;
   }
-  const sha = await fetchFileSha(remote);
-  const hash = contentHash(s);
-  const res = await ghRequest(`${repoPath(remote)}/contents/${filePath()}`, {
-    method: 'PUT',
-    body: {
-      message: message.trim() || defaultCommitMessage(s),
-      content: utf8ToBase64(remoteContent(s)),
-      branch: REMOTE_BRANCH,
-      ...(sha ? { sha } : {}),
-    },
-  });
   return {
     sha: res.commit.sha,
     message: res.commit.message,

@@ -222,6 +222,16 @@ function createProject(title) {
   saveState();
 }
 
+// 另存一份專案（不切換過去）：沒有遠端連結，避免和原專案搶同一個 repo
+function saveProjectCopy(s, title) {
+  const id = uid();
+  const copy = { ...JSON.parse(JSON.stringify(s)), title, local: defaultLocal() };
+  localStorage.setItem(projectKey(id), JSON.stringify(copy));
+  projects.list.push({ id, title });
+  saveProjects();
+  return id;
+}
+
 // 刪除目前的專案；刪掉最後一個時建立新的空白專案
 function deleteActiveProject() {
   const id = projects.activeId;
