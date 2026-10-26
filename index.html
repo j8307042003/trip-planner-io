@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1a73e8">
+  <!-- 加入主畫面（web app）時：狀態列透明、網頁畫面佔滿整個螢幕。
+       沒有這個設定時 iOS 會把網頁放到狀態列底下，但高度仍扣掉狀態列，底部留下一條空白 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>旅程地圖規劃</title>
   <!-- Material Symbols：只載入用到的圖示（icon_names 需依字母排序） -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=collections_bookmark,delete,directions,edit,event&display=block">
@@ -36,6 +40,15 @@
 
   <div id="menu" class="menu" hidden>
     <div class="menu-card" role="dialog" aria-label="旅程設定">
+      <!-- 專案：每個專案是一份獨立的存檔 -->
+      <div class="menu-section">
+        <div class="menu-section-title">專案</div>
+        <div class="project-row">
+          <select id="projectSelect" class="project-select" aria-label="切換專案"></select>
+          <button id="newProjectBtn" class="btn small">新增</button>
+          <button id="deleteProjectBtn" class="btn small danger">刪除</button>
+        </div>
+      </div>
       <div id="modeSwitch" class="mode-switch" role="group" aria-label="編輯模式">
         <button data-mode="trip"><span class="material-symbols-outlined ms-event" aria-hidden="true">event</span>每日行程</button>
         <button data-mode="library"><span class="material-symbols-outlined ms-collections_bookmark" aria-hidden="true">collections_bookmark</span>地點庫</button>
@@ -51,6 +64,8 @@
           <input id="showAll" type="checkbox"> 在地圖上顯示全部天數
         </label>
       </div>
+      <!-- 遠端（GitHub）：內容由 remote.js 產生 -->
+      <div id="remotePanel" class="menu-section remote-panel"></div>
       <div class="menu-actions">
         <button id="exportBtn" class="btn">匯出</button>
         <button id="importBtn" class="btn">匯入</button>
@@ -70,9 +85,12 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
   <script src="config.js"></script>
-  <!-- 依序載入：資料結構 → Google Maps → 畫面與操作流程（共用全域作用域） -->
+  <!-- 依序載入：資料結構 → Google Maps → 畫面與操作流程 → 遠端（共用全域作用域） -->
   <script src="store.js"></script>
   <script src="gmaps.js"></script>
   <script src="app.js"></script>
+  <!-- 遠端：GitHub API → 選單中的遠端操作介面 -->
+  <script src="github.js"></script>
+  <script src="remote.js"></script>
 </body>
 </html>

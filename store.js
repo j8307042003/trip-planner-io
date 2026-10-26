@@ -10,11 +10,17 @@
 //   place   = { id, name, address, lat, lng, placeId, types, icon, time, note }
 //   library = { collections: [collection], activeCollectionId }
 //   collection = { id, name, places: [place] }
+//   local   = { remote: { owner, repo } | null, token, commit, commitMessage, commitDate, syncedHash }
+//             只記錄在本機：這個專案連結的遠端，以及目前在哪一個 commit 上（不會推送到遠端，也不會匯出）
 //
-// 目前的資料放在全域的 state；匯入或清空時會整個換掉（state = ...）。
+// 每個專案是一份 state，各自存在瀏覽器；projects 記錄專案清單與目前開啟的專案。
+// 目前的資料放在全域的 state；匯入、清空或切換專案時會整個換掉（state = ...）。
 // ===========================================================================
 
+// 舊版只有一份存檔，第一次載入時搬成第一個專案
 const STORAGE_KEY = 'map-planner-v1';
+const PROJECTS_KEY = 'map-planner-projects';
+const projectKey = (id) => `map-planner-project:${id}`;
 const DAY_COLORS = ['#e8453c', '#34a853', '#1a73e8', '#f29900', '#9334e6', '#00a3bf', '#e8710a', '#795548', '#d01884', '#3949ab'];
 const COLLECTION_COLORS = ['#00897b', '#f4511e', '#8e24aa', '#3949ab', '#7cb342', '#6d4c41', '#d81b60', '#039be5'];
 const WEEKDAYS = '日一二三四五六';
@@ -77,8 +83,12 @@ function defaultState() {
   const day = newDay();
   return {
     version: 2, mode: 'trip', title: '我的旅程', startDate: '', days: [day], activeDayId: day.id, activeSectionId: null, dayOpen: true, showAll: false,
-    library: defaultLibrary(),
+    library: defaultLibrary(), local: defaultLocal(),
   };
+}
+
+function defaultLocal() {
+  return { remote: null, token: '', commit: null, commitMessage: '', commitDate: '', syncedHash: '' };
 }
 
 function defaultLibrary() {
@@ -115,6 +125,7 @@ function normalizeState(s) {
   } else if (!lib.collections.some((c) => c.id === lib.activeCollectionId)) {
     lib.activeCollectionId = null;
   }
+  s.local = s.local && typeof s.local === 'object' ? { ...defaultLocal(), ...s.local } : defaultLocal();
   return s;
 }
 
@@ -135,25 +146,95 @@ function collectionsFromJson(data) {
 // 讀寫瀏覽器儲存空間
 // ---------------------------------------------------------------------------
 
-function loadState() {
+function loadState(id) {
   try {
-    const s = normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    const s = normalizeState(JSON.parse(localStorage.getItem(projectKey(id))));
     if (s) return s;
   } catch { /* ignore */ }
   return defaultState();
 }
 
+// projects = { activeId, list: [{ id, title }] }；title 是專案清單顯示用的快取
+function loadProjects() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PROJECTS_KEY));
+    if (p && Array.isArray(p.list) && p.list.length && p.list.every((x) => x && x.id)) {
+      if (!p.list.some((x) => x.id === p.activeId)) p.activeId = p.list[0].id;
+      return p;
+    }
+  } catch { /* ignore */ }
+  // 沒有專案清單：把舊版的單一存檔（或新的空白行程）建成第一個專案
+  let first = null;
+  try { first = normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY))); } catch { /* ignore */ }
+  first ||= defaultState();
+  const id = uid();
+  try {
+    localStorage.setItem(projectKey(id), JSON.stringify(first));
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify({ activeId: id, list: [{ id, title: first.title }] }));
+    localStorage.removeItem(STORAGE_KEY);
+  } catch { /* ignore */ }
+  return { activeId: id, list: [{ id, title: first.title }] };
+}
+
+function saveProjects() {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* ignore */ }
+}
+
 // 回傳是否成功（儲存空間不足或被封鎖時失敗）
 function saveState() {
+  const entry = projects.list.find((p) => p.id === projects.activeId);
+  if (entry && entry.title !== state.title) {
+    entry.title = state.title;
+    saveProjects();
+  }
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(projectKey(projects.activeId), JSON.stringify(state));
     return true;
   } catch {
     return false;
   }
 }
 
-let state = loadState();
+let projects = loadProjects();
+let state = loadState(projects.activeId);
+
+// ---------------------------------------------------------------------------
+// 專案：新增、切換、刪除（呼叫端負責重繪畫面）
+// ---------------------------------------------------------------------------
+
+function projectTitle(p) { return p.title || '未命名旅程'; }
+
+function switchProject(id) {
+  if (id === projects.activeId || !projects.list.some((p) => p.id === id)) return;
+  saveState();
+  projects.activeId = id;
+  saveProjects();
+  state = loadState(id);
+}
+
+function createProject(title) {
+  if (projects.list.some((p) => p.id === projects.activeId)) saveState();
+  const id = uid();
+  state = { ...defaultState(), title: title || '我的旅程' };
+  projects.list.push({ id, title: state.title });
+  projects.activeId = id;
+  saveProjects();
+  saveState();
+}
+
+// 刪除目前的專案；刪掉最後一個時建立新的空白專案
+function deleteActiveProject() {
+  const id = projects.activeId;
+  try { localStorage.removeItem(projectKey(id)); } catch { /* ignore */ }
+  projects.list = projects.list.filter((p) => p.id !== id);
+  if (!projects.list.length) {
+    createProject();
+    return;
+  }
+  projects.activeId = projects.list[0].id;
+  saveProjects();
+  state = loadState(projects.activeId);
+}
 
 // ---------------------------------------------------------------------------
 // 行程查詢

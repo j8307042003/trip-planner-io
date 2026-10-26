@@ -52,6 +52,21 @@ function commit({ fit = false } = {}) {
   renderMap({ fit });
 }
 
+// state 整個換掉後（匯入、切換專案、切換遠端版本）：清掉介面狀態並重繪
+function afterStateReplaced() {
+  expandedPlaceId = null;
+  editingSectionId = null;
+  editingCollectionId = null;
+  placesOpenId = null;
+  picker = null;
+  editingDayName = false;
+  replacingCenterId = null;
+  libImport = null;
+  libImportMenuOpen = false;
+  closeInfoWindow();
+  commit({ fit: 'day' });
+}
+
 function selectDay(day) {
   state.activeDayId = day.id;
   state.activeSectionId = null;
@@ -171,6 +186,7 @@ const els = {
   tripTitle: $('#tripTitle'),
   startDate: $('#startDate'),
   showAll: $('#showAll'),
+  projectSelect: $('#projectSelect'),
 };
 
 let sortables = [];
@@ -996,7 +1012,22 @@ function openMenu() {
   els.tripTitle.value = state.title;
   els.startDate.value = state.startDate || '';
   els.showAll.checked = !!state.showAll;
+  renderProjectSelect();
+  renderRemotePanel();
   els.menu.hidden = false;
+}
+
+// 專案清單
+function renderProjectSelect() {
+  els.projectSelect.innerHTML = projects.list
+    .map((p) => `<option value="${esc(p.id)}" ${p.id === projects.activeId ? 'selected' : ''}>${esc(projectTitle(p))}</option>`)
+    .join('');
+}
+
+// 切換專案後重新整理選單內容（停留在選單中）
+function afterProjectChanged() {
+  afterStateReplaced();
+  openMenu();
 }
 function closeMenu() { els.menu.hidden = true; }
 
@@ -1026,6 +1057,29 @@ els.tripTitle.addEventListener('input', () => {
   state.title = els.tripTitle.value;
   document.title = `${state.title || '旅程'} · 旅程地圖規劃`;
   save();
+  renderProjectSelect();
+});
+
+els.projectSelect.addEventListener('change', () => {
+  switchProject(els.projectSelect.value);
+  afterProjectChanged();
+  toast(`已切換到「${state.title || '未命名旅程'}」`);
+});
+
+$('#newProjectBtn').addEventListener('click', () => {
+  const title = prompt('新專案名稱', '我的旅程');
+  if (title === null) return;
+  createProject(title.trim());
+  afterProjectChanged();
+  toast(`已建立專案「${state.title}」`);
+});
+
+$('#deleteProjectBtn').addEventListener('click', () => {
+  const remote = state.local.remote ? `\n（遠端 ${remoteLabel(state.local.remote)} 上的檔案不會被刪除）` : '';
+  if (!confirm(`確定刪除專案「${state.title || '未命名旅程'}」？此動作無法復原（可先匯出備份）。${remote}`)) return;
+  deleteActiveProject();
+  afterProjectChanged();
+  toast(`已切換到「${state.title || '未命名旅程'}」`);
 });
 
 els.startDate.addEventListener('change', () => {
@@ -1040,7 +1094,8 @@ els.showAll.addEventListener('change', () => {
 });
 
 $('#exportBtn').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  // local（遠端連結與所在的 commit）只屬於這個瀏覽器，不匯出
+  const blob = new Blob([remoteContent(state)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `${(state.title || 'trip').replace(/[\\/:*?"<>|]/g, '_')}.json`;
@@ -1057,11 +1112,11 @@ $('#importFile').addEventListener('change', async (e) => {
   try {
     const data = normalizeState(JSON.parse(await file.text()));
     if (!data) throw new Error('格式不符');
-    if (!confirm('匯入會取代目前的行程，確定嗎？')) return;
-    state = data;
-    expandedPlaceId = null;
+    if (!confirm('匯入會取代目前專案的行程，確定嗎？')) return;
+    // 保留目前專案的遠端連結；匯入的內容會算成尚未推送的變更
+    state = { ...data, local: state.local };
     closeMenu();
-    commit({ fit: 'day' });
+    afterStateReplaced();
     toast('匯入完成');
   } catch (err) {
     toast(`匯入失敗：${err.message}`);
@@ -1073,7 +1128,7 @@ $('#resetBtn').addEventListener('click', () => {
   const what = isLibrary() ? '地點庫中所有分類與地點' : '所有行程';
   if (!confirm(`確定清空${what}？此動作無法復原（可先匯出備份）。`)) return;
   if (isLibrary()) state.library = defaultLibrary();
-  else state = { ...defaultState(), library: state.library };
+  else state = { ...defaultState(), library: state.library, local: state.local };
   expandedPlaceId = null;
   editingCollectionId = null;
   closeInfoWindow();
