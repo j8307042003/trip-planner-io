@@ -33,6 +33,8 @@ let editingSectionId = null;
 let editingCollectionId = null;
 // 手機上點選區塊後，地點面板要按按鈕才展開；記錄展開中的區塊
 let placesOpenId = null;
+// 地點庫同樣：手機上分類的地點清單要按按鈕才展開；記錄展開中的分類
+let colPlacesOpenId = null;
 // 「從地點庫加入」的挑選狀態：{ sectionId 或 collectionId, filter: 分類 id 或 null（全部）, selected: Set<key> }
 // 目標是行程中的區塊，或地點庫中的分類（從其他分類加入）
 let picker = null;
@@ -58,6 +60,7 @@ function afterStateReplaced() {
   editingSectionId = null;
   editingCollectionId = null;
   placesOpenId = null;
+  colPlacesOpenId = null;
   picker = null;
   editingDayName = false;
   replacingCenterId = null;
@@ -108,6 +111,7 @@ function setMode(mode) {
 function selectCollection(col) {
   state.library.activeCollectionId = col ? col.id : null;
   expandedPlaceId = null;
+  colPlacesOpenId = null;
   editingCollectionId = null;
   libImport = null;
   picker = null;
@@ -124,6 +128,7 @@ function addPlaceToCollection(col, candidate) {
   col.places.push(place);
   state.library.activeCollectionId = col.id;
   expandedPlaceId = null;
+  colPlacesOpenId = col.id;
   commit();
   scrollToPlace(place.id);
   toast(`已加入「${col.name}」：${place.name}`);
@@ -588,6 +593,16 @@ function renderLibraryPanel() {
   const cols = state.library.collections;
   const col = activeCollection();
 
+  // 手機：分類的地點清單預設收起，用按鈕展開；編輯或挑選中一律展開（匯入畫面不受影響）
+  const mobileToggle = col && !libImport && isMobile();
+  if (mobileToggle && (editingCollectionId === col.id || picker?.collectionId === col.id)) colPlacesOpenId = col.id;
+  const showDetail = col && (!mobileToggle || colPlacesOpenId === col.id);
+  const toggleBar = mobileToggle ? `
+    <button class="places-toggle" data-action="toggle-col-places" aria-expanded="${showDetail}" style="--day-color:${collectionColor(col)}">
+      <span>${msIcon('collections_bookmark')} ${esc(col.name)} · ${col.places.length} 個地點</span>
+      <span class="places-toggle-hint">${showDetail ? '收起 ▴' : '顯示 ▾'}</span>
+    </button>` : '';
+
   panel.innerHTML = `
     <div class="day-card">
       <div class="library-head">
@@ -607,7 +622,7 @@ function renderLibraryPanel() {
         ${cols.length ? '' : '<span class="sections-hint">建立分類後，搜尋或<br>點選地圖上的地點加入</span>'}
       </div>
     </div>
-    ${libImport ? renderLibraryImport() : col ? renderCollectionDetail(col) : ''}`;
+    ${libImport ? renderLibraryImport() : `${toggleBar}${showDetail ? renderCollectionDetail(col) : ''}`}`;
 
   const list = panel.querySelector('#collectionList');
   enableDragScroll(list);
@@ -754,6 +769,12 @@ els.overlay.addEventListener('click', (e) => {
       placesOpenId = placesOpenId === sec.id ? null : sec.id;
       renderPanel();
       break;
+    case 'toggle-col-places': {
+      const id = state.library.activeCollectionId;
+      colPlacesOpenId = colPlacesOpenId === id ? null : id;
+      renderPanel();
+      break;
+    }
     case 'open-picker':
       picker = { sectionId: sec.id, filter: null, selected: new Set() };
       editingSectionId = null;
@@ -2054,6 +2075,8 @@ function showLibraryCandidate(c) {
 // 點地圖上地點庫的標記：切換到該分類並標示地點
 function selectLibraryPlace(col, place) {
   const changed = state.library.activeCollectionId !== col.id;
+  // 不改變地點清單的展開狀態：收起中就維持收起，只在地圖上顯示資訊；展開中換到別的分類時維持展開
+  if (changed && colPlacesOpenId === state.library.activeCollectionId) colPlacesOpenId = col.id;
   state.library.activeCollectionId = col.id;
   editingCollectionId = null;
   expandedPlaceId = place.id;
