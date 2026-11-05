@@ -64,6 +64,13 @@
           <input id="showAll" type="checkbox"> 在地圖上顯示全部天數
         </label>
       </div>
+      <!-- 本機設定：只存在這個瀏覽器，和目前開啟的專案無關 -->
+      <div class="menu-section local-settings">
+        <div class="menu-section-title">本機設定</div>
+        <label class="check">
+          <input id="showLocation" type="checkbox"> 在地圖上顯示目前位置
+        </label>
+      </div>
       <!-- 遠端（GitHub）：內容由 remote.js 產生 -->
       <div id="remotePanel" class="menu-section remote-panel"></div>
       <div class="menu-actions">
@@ -89,6 +96,8 @@
   <script src="store.js"></script>
   <script src="gmaps.js"></script>
   <script src="app.js"></script>
+  <!-- 目前位置（Geolocation） -->
+  <script src="location.js"></script>
   <!-- 遠端：GitHub API → 三方合併 → 選單中的遠端操作介面 -->
   <script src="github.js"></script>
   <script src="merge.js"></script>

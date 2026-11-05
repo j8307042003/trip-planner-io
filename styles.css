@@ -1251,3 +1251,26 @@ input[data-time-picker].open { border-color: var(--accent); outline: none; box-s
 .merge-where b { color: var(--text); font-weight: 600; }
 .merge-item .check { align-items: flex-start; font-size: 0.82rem; }
 .merge-item .check span { overflow-wrap: anywhere; }
+
+/* ---------- 目前位置 ---------- */
+.my-location { position: relative; width: 18px; height: 18px; transform: translateY(50%); pointer-events: none; }
+.my-location-dot {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #1a73e8;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.my-location-pulse {
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  background: rgba(26, 115, 232, 0.35);
+  animation: my-location-pulse 2s ease-out infinite;
+}
+@keyframes my-location-pulse {
+  from { transform: scale(0.4); opacity: 1; }
+  to { transform: scale(1.4); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .my-location-pulse { animation: none; opacity: 0.4; } }

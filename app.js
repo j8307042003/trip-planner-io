@@ -1572,6 +1572,8 @@ async function initMap() {
   await initGoogleMaps($('#map'), { controls: isWide(), onMapClick, onInfoWindowReady: keepInfoWindowVisible });
   backfillPlaceTypes();
   renderMap({ fit: state.activeSectionId ? 'section' : 'day' });
+  // 地圖載入前就取得的位置，現在畫上去（location.js）
+  drawLocation();
 }
 
 // ---------- Search ----------

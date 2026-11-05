@@ -481,8 +481,8 @@ function fitMapTo(points, padding) {
 }
 
 // content：標記的 DOM 元素（或 createPin 的圖釘）
-function createMarker({ position, content, title, zIndex, onClick }) {
-  const marker = new AdvancedMarkerElement({ map, position, content, title, zIndex, gmpClickable: true });
+function createMarker({ position, content, title, zIndex, onClick, clickable = true }) {
+  const marker = new AdvancedMarkerElement({ map, position, content, title, zIndex, gmpClickable: clickable });
   if (onClick) marker.addEventListener('gmp-click', onClick);
   return marker;
 }
@@ -492,10 +492,22 @@ function createPin({ color, text, scale }) {
   return new PinElement({ background: color, borderColor: '#ffffff', glyphText: text, glyphColor: '#ffffff', scale });
 }
 
-function drawCircle({ center, radius, color, opacity, weight }) {
+// fillOpacity：預設不填色（區塊範圍）；目前位置的準確度範圍會填色
+function drawCircle({ center, radius, color, opacity, weight, fillOpacity = 0, zIndex }) {
   return new google.maps.Circle({
-    map, center, radius, clickable: false, strokeColor: color, strokeOpacity: opacity, strokeWeight: weight, fillOpacity: 0,
+    map, center, radius, clickable: false, strokeColor: color, strokeOpacity: opacity, strokeWeight: weight,
+    fillColor: color, fillOpacity, zIndex,
   });
+}
+
+// 移動 createMarker / drawCircle 建立的物件（目前位置會持續更新）
+function moveMarker(marker, position) {
+  marker.position = position;
+}
+
+function moveCircle(circle, center, radius) {
+  circle.setCenter(center);
+  circle.setRadius(radius);
 }
 
 // 帶方向箭頭的路線
