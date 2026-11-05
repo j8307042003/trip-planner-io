@@ -643,7 +643,8 @@ button { cursor: pointer; }
 .sd-add-lib:hover { border-color: var(--day-color); color: var(--text); }
 
 .picker-head { display: flex; align-items: center; justify-content: space-between; padding-left: 2px; }
-.picker-filters { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
+/* 左右滑動由 enableDragScroll 處理（手機上不依賴原生滑動）；上下仍交給瀏覽器捲動外層 */
+.picker-filters { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; touch-action: pan-y; }
 .picker-filters::-webkit-scrollbar { display: none; }
 .picker-chip {
   --chip-color: var(--text-muted);

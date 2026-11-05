@@ -250,6 +250,7 @@ function renderDayPanel() {
   // 重繪時保留地點分頁的位置
   const prevPages = panel.querySelector('.place-pages');
   const prevPageScroll = prevPages && prevPages.dataset.sectionId === sec?.id ? prevPages.scrollLeft : 0;
+  const restoreScroll = keepScroll(panel, ['.picker-filters']);
 
   // 手機：地點面板預設收起，用按鈕展開；編輯或挑選中一律展開
   const mobileToggle = sec && isMobile();
@@ -293,6 +294,8 @@ function renderDayPanel() {
 
   const sectionList = panel.querySelector('#sectionList');
   enableDragScroll(sectionList);
+  enablePickerFilters(panel);
+  restoreScroll();
   const pages = panel.querySelector('.place-pages');
   if (pages) {
     pages.scrollLeft = prevPageScroll;
@@ -317,26 +320,48 @@ function renderDayPanel() {
 }
 
 // 區塊列：滑鼠拖曳與滾輪也能左右滑動（觸控裝置原生支援滑動）
-function enableDragScroll(el) {
+// touch = true：手指也由這裡處理（搭配 CSS touch-action: pan-y，不依賴原生的左右滑動），放開時帶慣性
+function enableDragScroll(el, { touch = false } = {}) {
   let startX = 0;
   let startScroll = 0;
   let dragging = false;
+  let glide = 0;
   el.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (e.pointerType === 'mouse' ? e.button !== 0 : !touch) return;
+    cancelAnimationFrame(glide);
     startX = e.clientX;
     startScroll = el.scrollLeft;
     dragging = false;
+    // 最近兩次移動，用來算放開時的速度
+    let last = { x: e.clientX, t: e.timeStamp };
+    let velocity = 0;
     const onMove = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
       const dx = ev.clientX - startX;
       if (!dragging && Math.abs(dx) < 5) return;
       dragging = true;
       el.classList.add('dragging');
       el.scrollLeft = startScroll - dx;
+      const dt = ev.timeStamp - last.t;
+      if (dt > 0) velocity = (ev.clientX - last.x) / dt;
+      last = { x: ev.clientX, t: ev.timeStamp };
     };
-    const onUp = () => {
+    const onUp = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       el.classList.remove('dragging');
+      // 手指放開時依速度繼續滑一段（停頓後才放開則不滑）
+      if (dragging && e.pointerType !== 'mouse' && ev.timeStamp - last.t < 100) {
+        let v = velocity * 16;
+        const step = () => {
+          el.scrollLeft -= v;
+          v *= 0.92;
+          if (Math.abs(v) > 0.5) glide = requestAnimationFrame(step);
+        };
+        glide = requestAnimationFrame(step);
+      }
       // 拖曳結束時不要觸發區塊的點擊
       if (dragging) {
         const block = (ev) => ev.stopPropagation();
@@ -346,12 +371,28 @@ function enableDragScroll(el) {
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   });
   el.addEventListener('wheel', (e) => {
     if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || el.scrollWidth <= el.clientWidth) return;
     e.preventDefault();
     el.scrollLeft += e.deltaY;
   }, { passive: false });
+}
+
+// 重繪面板前記下這些橫向清單的捲動位置，重繪後呼叫回傳的函式還原
+function keepScroll(panel, selectors) {
+  const saved = selectors.map((sel) => panel.querySelector(sel)?.scrollLeft || 0);
+  return () => selectors.forEach((sel, i) => {
+    const el = panel.querySelector(sel);
+    if (el) el.scrollLeft = saved[i];
+  });
+}
+
+// 從地點庫挑選時的分類篩選列：手指、滑鼠拖曳與滾輪都能左右滑動
+function enablePickerFilters(panel) {
+  const filters = panel.querySelector('.picker-filters');
+  if (filters) enableDragScroll(filters, { touch: true });
 }
 
 function renderSectionCard(sec, i, active) {
@@ -592,6 +633,8 @@ function renderLibraryPanel() {
   panel.hidden = false;
   const cols = state.library.collections;
   const col = activeCollection();
+  // 點選分類或篩選時清單維持原本的捲動位置（不自動捲到選取的分類）
+  const restoreScroll = keepScroll(panel, ['#collectionList', '.picker-filters']);
 
   // 手機：分類的地點清單預設收起，用按鈕展開；編輯或挑選中一律展開（匯入畫面不受影響）
   const mobileToggle = col && !libImport && isMobile();
@@ -626,6 +669,8 @@ function renderLibraryPanel() {
 
   const list = panel.querySelector('#collectionList');
   enableDragScroll(list);
+  enablePickerFilters(panel);
+  restoreScroll();
   const placeList = panel.querySelector('#placeList');
   if (window.Sortable && placeList && col && editingCollectionId === col.id) {
     sortables.push(Sortable.create(placeList, {
@@ -639,7 +684,6 @@ function renderLibraryPanel() {
       },
     }));
   }
-  list.querySelector('.section-card.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderCollectionCard(col, i, active) {
@@ -2082,6 +2126,8 @@ function selectLibraryPlace(col, place) {
   expandedPlaceId = place.id;
   save();
   render();
+  // 從地圖點選時把分類列捲到該分類（直接點清單時不捲動，見 renderLibraryPanel）
+  els.libraryPanel.querySelector('#collectionList .section-card.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (changed) renderMap();
   showPlaceInfo(place, markers.find((m) => m.key === place.id));
   scrollToPlace(place.id);
