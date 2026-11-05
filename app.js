@@ -320,64 +320,102 @@ function renderDayPanel() {
 }
 
 // 區塊列：滑鼠拖曳與滾輪也能左右滑動（觸控裝置原生支援滑動）
-// touch = true：手指也由這裡處理（搭配 CSS touch-action: pan-y，不依賴原生的左右滑動），放開時帶慣性
+// touch = true：手指也由這裡處理，不依賴瀏覽器原生的左右滑動（見 enableTouchScroll）
 function enableDragScroll(el, { touch = false } = {}) {
-  let startX = 0;
-  let startScroll = 0;
-  let dragging = false;
-  let glide = 0;
   el.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' ? e.button !== 0 : !touch) return;
-    cancelAnimationFrame(glide);
-    startX = e.clientX;
-    startScroll = el.scrollLeft;
-    dragging = false;
-    // 最近兩次移動，用來算放開時的速度
-    let last = { x: e.clientX, t: e.timeStamp };
-    let velocity = 0;
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    const startX = e.clientX;
+    const startScroll = el.scrollLeft;
+    let dragging = false;
     const onMove = (ev) => {
-      if (ev.pointerId !== e.pointerId) return;
       const dx = ev.clientX - startX;
       if (!dragging && Math.abs(dx) < 5) return;
       dragging = true;
       el.classList.add('dragging');
       el.scrollLeft = startScroll - dx;
-      const dt = ev.timeStamp - last.t;
-      if (dt > 0) velocity = (ev.clientX - last.x) / dt;
-      last = { x: ev.clientX, t: ev.timeStamp };
     };
-    const onUp = (ev) => {
-      if (ev.pointerId !== e.pointerId) return;
+    const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
       el.classList.remove('dragging');
-      // 手指放開時依速度繼續滑一段（停頓後才放開則不滑）
-      if (dragging && e.pointerType !== 'mouse' && ev.timeStamp - last.t < 100) {
-        let v = velocity * 16;
-        const step = () => {
-          el.scrollLeft -= v;
-          v *= 0.92;
-          if (Math.abs(v) > 0.5) glide = requestAnimationFrame(step);
-        };
-        glide = requestAnimationFrame(step);
-      }
-      // 拖曳結束時不要觸發區塊的點擊
-      if (dragging) {
-        const block = (ev) => ev.stopPropagation();
-        el.addEventListener('click', block, { capture: true, once: true });
-        setTimeout(() => el.removeEventListener('click', block, { capture: true }), 0);
-      }
+      if (dragging) blockNextClick(el);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
   });
   el.addEventListener('wheel', (e) => {
     if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || el.scrollWidth <= el.clientWidth) return;
     e.preventDefault();
     el.scrollLeft += e.deltaY;
   }, { passive: false });
+  if (touch) enableTouchScroll(el);
+}
+
+// 拖曳結束時不要觸發底下項目的點擊
+function blockNextClick(el) {
+  const block = (ev) => ev.stopPropagation();
+  el.addEventListener('click', block, { capture: true, once: true });
+  setTimeout(() => el.removeEventListener('click', block, { capture: true }), 0);
+}
+
+// 手指左右滑動：用 touch 事件自己判斷方向，不交給 touch-action 由瀏覽器決定
+// （手指在矮的橫向列上滑動通常帶點斜度，瀏覽器常判定成上下捲動而中斷左右拖曳）。
+// 移動超過門檻後鎖定方向：偏水平就阻止瀏覽器預設行為並捲動這一列，偏垂直就交給外層上下捲動。
+// 放開時依最近一段時間的速度帶慣性繼續滑。
+const TOUCH_AXIS_THRESHOLD = 6;
+// 水平移動只要達到垂直移動的這個比例就算左右滑（橫向列偏向判定成左右）
+const TOUCH_HORIZONTAL_BIAS = 0.6;
+
+function enableTouchScroll(el) {
+  let drag = null;
+  let glide = 0;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) {
+      drag = null;
+      return;
+    }
+    cancelAnimationFrame(glide);
+    const t = e.touches[0];
+    drag = { x: t.clientX, y: t.clientY, scroll: el.scrollLeft, axis: null, samples: [{ x: t.clientX, t: e.timeStamp }] };
+  }, { passive: true });
+
+  el.addEventListener('touchmove', (e) => {
+    if (!drag) return;
+    const t = e.touches[0];
+    const dx = t.clientX - drag.x;
+    const dy = t.clientY - drag.y;
+    if (!drag.axis) {
+      if (Math.hypot(dx, dy) < TOUCH_AXIS_THRESHOLD) return;
+      drag.axis = Math.abs(dx) >= Math.abs(dy) * TOUCH_HORIZONTAL_BIAS ? 'x' : 'y';
+    }
+    if (drag.axis !== 'x') return;
+    if (e.cancelable) e.preventDefault();
+    el.scrollLeft = drag.scroll - dx;
+    drag.samples.push({ x: t.clientX, t: e.timeStamp });
+    // 只保留最近 100ms 的移動來算速度
+    while (drag.samples.length > 2 && e.timeStamp - drag.samples[0].t > 100) drag.samples.shift();
+  }, { passive: false });
+
+  const end = (e) => {
+    if (!drag) return;
+    const { axis, samples } = drag;
+    drag = null;
+    if (axis !== 'x') return;
+    blockNextClick(el);
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    // 停頓後才放開就不滑
+    if (e.timeStamp - last.t > 100 || last.t === first.t) return;
+    let v = ((last.x - first.x) / (last.t - first.t)) * 16; // 每個畫面移動的像素
+    const step = () => {
+      el.scrollLeft -= v;
+      v *= 0.94;
+      if (Math.abs(v) > 0.5) glide = requestAnimationFrame(step);
+    };
+    glide = requestAnimationFrame(step);
+  };
+  el.addEventListener('touchend', end);
+  el.addEventListener('touchcancel', () => { drag = null; });
 }
 
 // 重繪面板前記下這些橫向清單的捲動位置，重繪後呼叫回傳的函式還原
